@@ -39,6 +39,7 @@ public final class JavaWordCount {
 
     SparkSession spark = SparkSession
       .builder()
+            .master("spark://xmac:7077")
       .appName("JavaWordCount")
       .getOrCreate();
 

@@ -51,7 +51,7 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv, numUsableCores: Int) exte
     new ConcurrentHashMap[RpcEndpoint, RpcEndpointRef]
 
   // Track the receivers whose inboxes may contain messages.
-  private val receivers = new LinkedBlockingQueue[EndpointData]
+  private val  receivers = new LinkedBlockingQueue[EndpointData]
 
   /**
    * True if the dispatcher has been stopped. Once stopped, all messages posted will be bounced
