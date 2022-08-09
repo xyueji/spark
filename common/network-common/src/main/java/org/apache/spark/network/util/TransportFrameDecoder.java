@@ -41,47 +41,89 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
  * interceptor. When the interceptor indicates that it doesn't need to read any more data,
  * framing resumes. Interceptors should not hold references to the data buffers provided
  * to their handle() method.
+ *
+ * 对从管道中读取的ByteBuf按照数据帧进行解析。
  */
 public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 
+  // 处理器名
   public static final String HANDLER_NAME = "frameDecoder";
+  // 表示帧大小的数据长度
   private static final int LENGTH_SIZE = 8;
+  // 最大帧大小，为Integer.MAX_VALUE
   private static final int MAX_FRAME_SIZE = Integer.MAX_VALUE;
+  // 标记字段，用于标记帧大小记录是无效的
   private static final int UNKNOWN_FRAME_SIZE = -1;
 
+  /**
+   * 存储ByteBuf的链表，收到的ByteBuf会存入该链表
+    */
   private final LinkedList<ByteBuf> buffers = new LinkedList<>();
+  // 存放帧大小的ByteBuf
   private final ByteBuf frameLenBuf = Unpooled.buffer(LENGTH_SIZE, LENGTH_SIZE);
 
+  // 当次总共可读字节
   private long totalSize = 0;
+  // 下一个帧的大小
   private long nextFrameSize = UNKNOWN_FRAME_SIZE;
+  // 拦截器
   private volatile Interceptor interceptor;
 
+  /**
+   * 当收到一个ByteBuf，channelRead(...)方法会先将其存入到buffers链表，并将其可读字节数添加到totalSize，
+   * 然后在buffers链表不为空的情况下，不断取出链表头的ByteBuf进行处理，其实这里buffers链表充当了一个FIFO的队列，保证了ByteBuf的顺序。
+   *
+   * 取到的ByteBuf会根据是否有拦截器分别进行处理；
+   *    拦截器会对消息进行拦截，在Spark中实现的可用拦截器只有StreamInterceptor，是用于流传输的场景；
+   *    在有拦截器的情况下，仅仅是将在拦截操作中读取的数据丢弃并维护可读字节数记录，并没有做其他的操作；
+   *    另外需要注意的是，拦截器会在检查通过后被移除，否则会被理由为“Interceptor still active but buffer has data.”的断言终止。
+   *
+   * 在没有拦截器的情况下，会调用decodeNext()方法进行解码帧数据，该方法才是拆包的关键
+   *
+   * @param ctx
+   * @param data
+   * @throws Exception
+   */
   @Override
   public void channelRead(ChannelHandlerContext ctx, Object data) throws Exception {
+    // 将传入的数据转换为Netty的ByteBuf
     ByteBuf in = (ByteBuf) data;
+    // 添加到LinkedList类型的buffers链表中进行记录
     buffers.add(in);
+    // 增加总共可读取的字节数
     totalSize += in.readableBytes();
 
+    // 遍历buffers链表
     while (!buffers.isEmpty()) {
       // First, feed the interceptor, and if it's still, active, try again.
+      // 有拦截器，让拦截器处理，拦截器只会处理一次
       if (interceptor != null) {
+        // 取出链表头的ByteBuf
         ByteBuf first = buffers.getFirst();
+        // 计算可读字节数
         int available = first.readableBytes();
+        // 先使用intercepter处理数据
         if (feedInterceptor(first)) {
           assert !first.isReadable() : "Interceptor still active but buffer has data.";
         }
 
+        // 计算已读字节数
         int read = available - first.readableBytes();
+        // 如果全部读完，就将该ByteBuf从buffers链表中移除
         if (read == available) {
           buffers.removeFirst().release();
         }
+        // 维护可读字节计数
         totalSize -= read;
       } else {
         // Interceptor is not active, so try to decode one frame.
+        // 没有拦截器，尝试解码帧数据
         ByteBuf frame = decodeNext();
+        // 解码出来的帧数据为null，直接跳出循环
         if (frame == null) {
           break;
         }
+        // 能够解码得到数据，传递给下一个Handler
         ctx.fireChannelRead(frame);
       }
     }
@@ -122,7 +164,9 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
   }
 
   private ByteBuf decodeNext() {
+    // 得到帧大小
     long frameSize = decodeFrameSize();
+    // 检查帧大小的合法性
     if (frameSize == UNKNOWN_FRAME_SIZE || totalSize < frameSize) {
       return null;
     }
@@ -134,19 +178,33 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
     Preconditions.checkArgument(frameSize > 0, "Frame length should be positive: %s", frameSize);
 
     // If the first buffer holds the entire frame, return it.
+    // 剩余可读帧数
     int remaining = (int) frameSize;
+    /*
+     * 如果buffers中第一个ByteBuf的可读字节数大于等于可读帧数，
+     * 表示这一个ByteBuf包含了一整个帧的数据，可以一次读到一个帧
+     */
     if (buffers.getFirst().readableBytes() >= remaining) {
       return nextBufferForFrame(remaining);
     }
 
     // Otherwise, create a composite buffer.
+    // 此时说明一个ByteBuf的数据不够一个帧，构造一个复合ByteBuf
     CompositeByteBuf frame = buffers.getFirst().alloc().compositeBuffer(Integer.MAX_VALUE);
+    // 当还没读到一个帧的数据时，循环处理
     while (remaining > 0) {
+      /*
+       * 获取buffers链表头的ByteBuf中remaining长度的数据
+       * 读取过程中如果将链表头的ByteBuf读完了，会将其从buffers中移除
+       */
       ByteBuf next = nextBufferForFrame(remaining);
+      // 减去读到的数据
       remaining -= next.readableBytes();
+      // 添加到CompositeByteBuf
       frame.addComponent(next).writerIndex(frame.writerIndex() + next.readableBytes());
     }
     assert remaining == 0;
+    // 终于读完一个帧了，返回复合ByteBuf
     return frame;
   }
 

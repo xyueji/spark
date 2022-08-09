@@ -1055,7 +1055,9 @@ private[deploy] object Master extends Logging {
     Utils.initDaemon(log)
     val conf = new SparkConf
     val args = new MasterArguments(argStrings, conf)
+    // 调用startRpcEnvAndEndpoint()方法启动
     val (rpcEnv, _, _) = startRpcEnvAndEndpoint(args.host, args.port, args.webUiPort, conf)
+    // 该操作最后调用了Dispatcher中线程池的awaitTermination()方法
     rpcEnv.awaitTermination()
   }
 
@@ -1064,17 +1066,23 @@ private[deploy] object Master extends Logging {
    *   (1) The Master RpcEnv
    *   (2) The web UI bound port
    *   (3) The REST server bound port, if any
+   *   用于创建Master对象，并将Master对象注册到RpcEnv中完成对Master对象的启动。
    */
   def startRpcEnvAndEndpoint(
       host: String,
       port: Int,
       webUiPort: Int,
       conf: SparkConf): (RpcEnv, Int, Option[Int]) = {
+    // 创建SecurityManager
     val securityMgr = new SecurityManager(conf)
+    // 创建RpcEnv
     val rpcEnv = RpcEnv.create(SYSTEM_NAME, host, port, conf, securityMgr)
+    // 创建Master，将Master（Master继承了ThreadSafeRpcEndpoint）注册到RpcEnv中，获得Master的RpcEndpointRef。
     val masterEndpoint = rpcEnv.setupEndpoint(ENDPOINT_NAME,
       new Master(rpcEnv, rpcEnv.address, webUiPort, securityMgr, conf))
+    // 向Master发送BoundPortsRequest消息，并获得返回的BoundPortsResponse消息。
     val portsResponse = masterEndpoint.askSync[BoundPortsResponse](BoundPortsRequest)
+    // 返回创建的RpcEnv、BoundPortsResponse消息携带的WebUIPort、REST服务的端口（restPort）等信息。
     (rpcEnv, portsResponse.webUIPort, portsResponse.restPort)
   }
 }

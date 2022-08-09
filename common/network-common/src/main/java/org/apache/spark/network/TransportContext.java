@@ -163,12 +163,15 @@ public class TransportContext {
    * Creates the server- and client-side handler which is used to handle both RequestMessages and
    * ResponseMessages. The channel is expected to have been successfully created, though certain
    * properties (such as the remoteAddress()) may not be available yet.
+   * TransportChannelHandler在服务端将代理Transport-RequestHandler对请求消息进行处理
+   * 并在客户端代理TransportResponseHandler对响应消息进行处理。
    */
   private TransportChannelHandler createChannelHandler(Channel channel, RpcHandler rpcHandler) {
     TransportResponseHandler responseHandler = new TransportResponseHandler(channel);
     TransportClient client = new TransportClient(channel, responseHandler);
     TransportRequestHandler requestHandler = new TransportRequestHandler(channel, client,
       rpcHandler, conf.maxChunksBeingTransferred());
+    // 将TransportClient、TransportResponseHandler和TransportRequestHandler绑定在一个TransportChannelHandler上
     return new TransportChannelHandler(client, responseHandler, requestHandler,
       conf.connectionTimeoutMs(), closeIdleConnections);
   }

@@ -53,6 +53,9 @@ private[netty] case class RemoteProcessConnectionError(cause: Throwable, remoteA
 
 /**
  * An inbox that stores messages for an [[RpcEndpoint]] and posts messages to it thread-safely.
+ * 端点内的盒子。
+ * 每个RpcEndpoint都有一个对应的盒子，这个盒子里有个存储InboxMessage消息的列表messages。
+ * 所有的消息将缓存在messages列表里面，并由RpcEndpoint异步处理这些消息。
  */
 private[netty] class Inbox(
     val endpointRef: NettyRpcEndpointRef,
@@ -87,9 +90,11 @@ private[netty] class Inbox(
   def process(dispatcher: Dispatcher): Unit = {
     var message: InboxMessage = null
     inbox.synchronized {
+      // 如果不允许并发操作，但已激活线程数不为0，则说明已有线程在处理消息
       if (!enableConcurrent && numActiveThreads != 0) {
         return
       }
+      // 从自己的message链表头取出消息
       message = messages.poll()
       if (message != null) {
         numActiveThreads += 1

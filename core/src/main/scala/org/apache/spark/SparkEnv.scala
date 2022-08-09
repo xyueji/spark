@@ -314,12 +314,14 @@ object SparkEnv extends Logging {
         rpcEnv, mapOutputTracker.asInstanceOf[MapOutputTrackerMaster], conf))
 
     // Let the user specify short names for shuffle managers
+    // sort和tungsten-sort两种ShuffleManager的实现了都是SortShuffleManager
     val shortShuffleMgrNames = Map(
       "sort" -> classOf[org.apache.spark.shuffle.sort.SortShuffleManager].getName,
       "tungsten-sort" -> classOf[org.apache.spark.shuffle.sort.SortShuffleManager].getName)
     val shuffleMgrName = conf.get("spark.shuffle.manager", "sort")
     val shuffleMgrClass =
       shortShuffleMgrNames.getOrElse(shuffleMgrName.toLowerCase(Locale.ROOT), shuffleMgrName)
+    // 初始化ShuffleManager，利用反射机制创建
     val shuffleManager = instantiateClass[ShuffleManager](shuffleMgrClass)
 
     val useLegacyMemoryManager = conf.getBoolean("spark.memory.useLegacyMode", false)

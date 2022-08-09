@@ -95,6 +95,7 @@ public class TransportServer implements Closeable {
       NettyUtils.createEventLoop(ioMode, conf.serverThreads(), conf.getModuleName() + "-server");
     EventLoopGroup workerGroup = bossGroup;
 
+    // 创建一个汇集ByteBuf但对本地线程缓存禁用的分配器
     PooledByteBufAllocator allocator = NettyUtils.createPooledByteBufAllocator(
       conf.preferDirectBufs(), true /* allowCache */, conf.serverThreads());
 
@@ -120,13 +121,17 @@ public class TransportServer implements Closeable {
       bootstrap.childOption(ChannelOption.SO_SNDBUF, conf.sendBuf());
     }
 
+    // 为根引导程序设置管道初始化回调函数
     bootstrap.childHandler(new ChannelInitializer<SocketChannel>() {
+      // 当服务端的Channel初始化时该方法会被调用
       @Override
       protected void initChannel(SocketChannel ch) {
         RpcHandler rpcHandler = appRpcHandler;
+        // 遍历所有的TransportServerBootstrap，调用其doBootstraps()方法
         for (TransportServerBootstrap bootstrap : bootstraps) {
           rpcHandler = bootstrap.doBootstrap(ch, rpcHandler);
         }
+        // 使用TransportContext的initializePipeline()方法为服务端的ChannelPipeline添加处理器
         context.initializePipeline(ch, rpcHandler);
       }
     });

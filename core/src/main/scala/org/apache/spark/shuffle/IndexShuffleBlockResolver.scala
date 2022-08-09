@@ -38,6 +38,10 @@ import org.apache.spark.util.Utils
  * We use the name of the shuffle data's shuffleBlockId with reduce ID set to 0 and add ".data"
  * as the filename postfix for data file, and ".index" as the filename postfix for index file.
  *
+ * 特质ShuffleBlockResolver定义了对Shuffle Block进行解析的规范，
+ * 包括获取Shuffle数据文件、获取Shuffle索引文件、删除指定的Shuffle数据文件和索引文件、生成Shuffle索引文件、获取Shuffle块的数据等。
+ * ShuffleBlockResolver目前只有IndexShuffleBlockResolver这唯一的实现类。
+ * IndexShuffleBlockResolver用于创建和维护Shuffle Block与物理文件位置之间的映射关系。
  */
 // Note: Changes to the format in this file should be kept in sync with
 // org.apache.spark.network.shuffle.ExternalShuffleBlockResolver#getSortBasedShuffleBlockData().

@@ -48,6 +48,7 @@ private[netty] class NettyRpcEnv(
     numUsableCores: Int) extends RpcEnv(conf) with Logging {
 
   private[netty] val transportConf = SparkTransportConf.fromSparkConf(
+    // 对SparkConf进行克隆，并设置spark.rpc.io.numConnectionsPerPeer为1，用于指定对等节点间的连接数
     conf.clone.set("spark.rpc.io.numConnectionsPerPeer", "1"),
     "rpc",
     conf.getInt("spark.rpc.io.threads", numUsableCores))
@@ -324,23 +325,38 @@ private[netty] class NettyRpcEnv(
 
   override def fileServer: RpcEnvFileServer = streamManager
 
+  /**
+   * 根据URI打开一个ReadableByteChannel用于下载文件
+   *
+   * @param uri URI with location of the file.
+   * @return
+   */
   override def openChannel(uri: String): ReadableByteChannel = {
+    // 解析URI为URI对象
     val parsedUri = new URI(uri)
+
+    // 检查URI是否合法
     require(parsedUri.getHost() != null, "Host name must be defined.")
     require(parsedUri.getPort() > 0, "Port must be defined.")
     require(parsedUri.getPath() != null && parsedUri.getPath().nonEmpty, "Path must be defined.")
 
+    // 创建单向管道，数据会从pipe的sink写入，然后可以从source读取
     val pipe = Pipe.open()
+    // 将pipe的source包装为FileDownloadChannel
     val source = new FileDownloadChannel(pipe.source())
     Utils.tryWithSafeFinallyAndFailureCallbacks(block = {
+      // 创建TransportClient客户端
       val client = downloadClient(parsedUri.getHost(), parsedUri.getPort())
+      // 创建下载回调，此回调会把读到的数据写入到pipe的sink中
       val callback = new FileDownloadCallback(pipe.sink(), source, client)
+      // 使用TransportClient的stream()方法发送流请求进行文件下载，响应的数据将交给callback处理
       client.stream(parsedUri.getPath(), callback)
     })(catchBlock = {
       pipe.sink().close()
       source.close()
     })
 
+    // 返回FileDownloadChannel类型的source，它的读取方法会从pipe的source读取数据
     source
   }
 
@@ -452,20 +468,27 @@ private[netty] object NettyRpcEnv extends Logging {
 private[rpc] class NettyRpcEnvFactory extends RpcEnvFactory with Logging {
 
   def create(config: RpcEnvConfig): RpcEnv = {
+    // 创建序列化器
     val sparkConf = config.conf
     // Use JavaSerializerInstance in multiple threads is safe. However, if we plan to support
     // KryoSerializer in future, we have to use ThreadLocal to store SerializerInstance
     val javaSerializerInstance =
       new JavaSerializer(sparkConf).newInstance().asInstanceOf[JavaSerializerInstance]
+    // 通过序列化器、监听地址、安全管理器等构造NettyRpcEnv
+    // 定义启动RpcEnv的偏函数，该偏函数中会创建TransportServer
     val nettyEnv =
       new NettyRpcEnv(sparkConf, javaSerializerInstance, config.advertiseAddress,
         config.securityManager, config.numUsableCores)
     if (!config.clientMode) {
+      // 如果是Driver
+      // 定义启动RpcEnv的偏函数，该偏函数中会创建TransportServer
       val startNettyRpcEnv: Int => (NettyRpcEnv, Int) = { actualPort =>
+        // 调用NettyRpcEnv的startServer()，这里会创建TransportServer
         nettyEnv.startServer(config.bindAddress, actualPort)
         (nettyEnv, nettyEnv.address.port)
       }
       try {
+        // 在指定端口启动NettyRpcEnv
         Utils.startServiceOnPort(config.port, startNettyRpcEnv, sparkConf, config.name)._1
       } catch {
         case NonFatal(e) =>

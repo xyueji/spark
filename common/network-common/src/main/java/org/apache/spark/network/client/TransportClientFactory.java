@@ -94,10 +94,16 @@ public class TransportClientFactory implements Closeable {
     this.conf = context.getConf();
     this.clientBootstraps = Lists.newArrayList(Preconditions.checkNotNull(clientBootstraps));
     this.connectionPool = new ConcurrentHashMap<>();
+    /*
+      每个远程地址的ClientPool池内最多可以存放的TransportClient的数量
+      由spark.模块名.io.numConnectionsPerPeer参数配置，默认为1
+     */
     this.numConnectionsPerPeer = conf.numConnectionsPerPeer();
     this.rand = new Random();
 
+    // IO模式，即从TransportConf获取key为“spark.模块名.io.mode”的属性值。默认值为NIO，Spark还支持EPOLL
     IOMode ioMode = IOMode.valueOf(conf.ioMode());
+    // 根据IOMode创建SocketChannel，NIO模式为NioSocketChannel，Epoll模式为EpollSocketChannel
     this.socketChannelClass = NettyUtils.getClientChannelClass(ioMode);
     this.workerGroup = NettyUtils.createEventLoop(
         ioMode,
@@ -206,7 +212,9 @@ public class TransportClientFactory implements Closeable {
       throws IOException, InterruptedException {
     logger.debug("Creating new connection to {}", address);
 
+    // 构建根引导程序Bootstrap应对其进行配置
     Bootstrap bootstrap = new Bootstrap();
+    // 设置线程组
     bootstrap.group(workerGroup)
       .channel(socketChannelClass)
       // Disable Nagle's Algorithm since we don't want packets to wait
@@ -223,13 +231,26 @@ public class TransportClientFactory implements Closeable {
       bootstrap.option(ChannelOption.SO_SNDBUF, conf.sendBuf());
     }
 
+    // 记录TransportClient和Channel
     final AtomicReference<TransportClient> clientRef = new AtomicReference<>();
     final AtomicReference<Channel> channelRef = new AtomicReference<>();
 
+    // 为根引导程序设置管道初始化回调函数
     bootstrap.handler(new ChannelInitializer<SocketChannel>() {
       @Override
       public void initChannel(SocketChannel ch) {
+        // 该回调方法会在bootstrap连接到远程服务器时被调用
+        /*
+         * 根据Channel初始化TransportContext的Pipeline
+         * 在该过程中会创建TransportChannelHandler对象，
+         * 而创建TransportChannelHandler会关联TransportResponseHandler和TransportRequestHandler及TransportClient三个对象。
+         * 这里会获取其中的TransportClient，该TransportClient关联了Channel对象。
+         *
+         * 可以发现使用的是与创建服务端时一样的方法：通过TransportContext的initializePipeline(...)方法，
+         * 这也印证了前面提到过的，在Spark中，服务端和客户端的Netty实现使用的是相同的处理器链。
+         */
         TransportChannelHandler clientHandler = context.initializePipeline(ch);
+        // 记录TransportClient和Channel
         clientRef.set(clientHandler.getClient());
         channelRef.set(ch);
       }

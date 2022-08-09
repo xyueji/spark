@@ -124,6 +124,11 @@ public class TransportClient implements Closeable {
    * to be returned in the same order that they were requested, assuming only a single
    * TransportClient is used to fetch the chunks.
    *
+   * 从远端协商好的流中请求单个块
+   * fetchChunk(...)方法除了存放回调对象的方式和构造的消息对象类型与sendRpc(...)方法不同以外，功能实现上几乎是一致的。
+   * 对于ChunkReceivedCallback类型的回调对象，存放位置是TransportResponseHandler的outstandingFetches字典，键为StreamChunkId对象；
+   * 另外，fetchChunk(...)方法最终构造的消息对象类型是ChunkFetchRequest。
+   *
    * @param streamId Identifier that refers to a stream in the remote StreamManager. This should
    *                 be agreed upon by client and server beforehand.
    * @param chunkIndex 0-based index of the chunk to fetch
@@ -152,6 +157,11 @@ public class TransportClient implements Closeable {
 
   /**
    * Request to stream the data with the given stream ID from the remote end.
+   * 使用流ID，从远端获取数据
+   * stream(...)方法中存放回调的结构是队列（TransportResponseHandler的streamCallbacks队列），
+   * 这与前面的两个方法是不同的。客户端在获取流的时候，只能够按照顺序获取，且服务端每次只会处理一个流请求，
+   * 因此请求和响应都是通过队列来管理的，以FIFO模式的保证顺序。
+   * 另外，stream(...)方法最终构造的消息对象类型是StreamRequest。
    *
    * @param streamId The stream to fetch.
    * @param callback Object to call with the stream data.
@@ -180,6 +190,12 @@ public class TransportClient implements Closeable {
    * Sends an opaque message to the RpcHandler on the server-side. The callback will be invoked
    * with the server's response or upon any failure.
    *
+   * sendRpc(...)方法的第一个参数是要发送的消息数据，第二个参数则是包装了收到响应后需要进行的操作的回调对象。
+   * sendRpc(...)方法会为每个RpcRequest设定一个Request ID，然后将Request ID和回调对象进行关联，
+   * 存放到TransportResponseHandler的outstandingRpcs字典中，而服务端在对应的响应消息中也会携带相同的Request ID，
+   * 这样一来，客户端在收到响应之后，可以根据Request ID查找当时存放在TransportResponseHandler的outstandingRpcs字典中的回调对象，
+   * 使用该回调对象进行响应处理。这种设计方法在分布式框架中是非常常见的。
+   *
    * @param message The message to send.
    * @param callback Callback to handle the RPC's reply.
    * @return The RPC's id.
@@ -189,9 +205,22 @@ public class TransportClient implements Closeable {
       logger.trace("Sending RPC to {}", getRemoteAddress(channel));
     }
 
+    // 使用UUID生产请求主键
     long requestId = requestId();
+    /*
+     * 注意这里的操作，向TransportResponseHandler添加requestId和RpcResponseCallback的引用关系。
+     * 该TransportResponseHandler是在向Bootstrap的处理器链中添加TransportChannelHandler时添加的，
+     * 这一步操作会将requestId和回调进行关联，在客户端收到服务端的响应消息时，响应消息中是携带了相同的requestId的，
+     * 此时就可以通过requestId从TransportResponseHandler中获取当时发送请求时设置的回调，
+     * 达到通过响应结果处理回调的效果。
+     */
     handler.addRpcRequest(requestId, callback);
 
+    /*
+     * 在使用Channel写出数据后，会添加一个监听器监听写出情况，如果写出失败，
+     * 会从TransportResponseHandler的outstandingRpcs字典中移除当时存放的回调对象，
+     * 直接调用回调对象的onFailure(...)方法以告知失败情况。
+     */
     RpcChannelListener listener = new RpcChannelListener(requestId, callback);
     channel.writeAndFlush(new RpcRequest(requestId, new NioManagedBuffer(message)))
       .addListener(listener);
@@ -232,6 +261,7 @@ public class TransportClient implements Closeable {
    * a specified timeout for a response.
    */
   public ByteBuffer sendRpcSync(ByteBuffer message, long timeoutMs) {
+      // 通过SettableFuture实现同步发送消息
     final SettableFuture<ByteBuffer> result = SettableFuture.create();
 
     sendRpc(message, new RpcResponseCallback() {

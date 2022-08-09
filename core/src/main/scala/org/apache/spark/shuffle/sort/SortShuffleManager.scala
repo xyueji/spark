@@ -65,6 +65,26 @@ import org.apache.spark.shuffle._
  *    and avoids the need to allocate decompression or copying buffers during the merge.
  *
  * For more details on these optimizations, see SPARK-7081.
+ * 译：
+ *  在基于排序的Shuffle中，传入的记录将根据其目标分区ID进行排序写入单个Map输出文件。
+ *  Reduce任务获取此文件的连续区域以便读取他们的Map输出部分。如果Map输出数据太大而无法容纳在内存中，
+ *  输出的已排序子集数据可以溢出到磁盘，并合并磁盘上的文件生成最终的输出文件。
+ *  基于排序的Shuffle有两个不同的写方式用于生成其映射输出文件：
+ *   - 序列化排序方式：在满足以下所有三个条件时使用：
+ *      1. Shuffle依赖项没有指定聚合或输出排序。
+ *      2. Shuffle序列化程序支持序列化值的重定位（这是目前的由KryoSerializer和Spark SQL的自定义序列化程序支持）。
+ *      3. Shuffle产生的输出分区ID小于16777216，也即是最多只能有16777216个分区（分区ID从0开始计算）。
+ *   - 反序列化排序方式：用于处理所有其他情况。
+ *  序列化排序模式：
+ *  在序列化排序模式中，传入的记录在传递给ShuffleWriter后立即被序列化，在排序过程中以序列化形式进行缓冲。此写方式实现几个优化：
+ *   1. 它的排序操作是基于序列化二进制数据而不是Java对象，这减少了内存消耗和GC开销。此优化要求记录序列化器具有一定的性能够对序列化记录直接重新排序，
+ *     而不需要反序列化。有关详细信息，请参见SPARK-4550，其中首次提出并实施了此优化。
+ *   2. 它使用一种专门的缓存高效分拣机（ShuffleExternalSorter）对存储了压缩记录指针和分区ID的数组进行分类，在排序数组中，
+ *     每个元素只使用8个字节的空间记录，因此可以缓存更多的数组。
+ *   3. 溢写过程中进行合并时会将属于同一个分区的序列化记录合并到同一个数据块，并且在合并期间不需要反序列化记录。
+ *   4. 当溢写操作的压缩编解码器支持压缩数据的组合时，溢写时的合并操作将简单地将序列化的数据和经过压缩的溢写数据进行合并，来产生最终的输出分区数据。
+ *     这允许使用有效的数据复制方法，如NIO的transferTo，以避免在合并期间分配解压缩或用于复制操作缓冲区的需要。
+ *  有关这些优化的更多详细信息，请参阅SPARK-7081。
  */
 private[spark] class SortShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
 
@@ -88,6 +108,9 @@ private[spark] class SortShuffleManager(conf: SparkConf) extends ShuffleManager 
       shuffleId: Int,
       numMaps: Int,
       dependency: ShuffleDependency[K, V, C]): ShuffleHandle = {
+    // 三种ShuffleHandle都是非常简单的标记类，只是为了标记后面的Shuffle过程使用哪种ShuffleWriter。
+    // partition数小于spark.shuffle.sort.bypassMergeThreshold（默认：200），且没有开启Map端Combine操作，
+    // 则使用BypassMergeSortShuffleHandle
     if (SortShuffleWriter.shouldBypassMergeSort(conf, dependency)) {
       // If there are fewer than spark.shuffle.sort.bypassMergeThreshold partitions and we don't
       // need map-side aggregation, then write numPartitions files directly and just concatenate
@@ -98,6 +121,14 @@ private[spark] class SortShuffleManager(conf: SparkConf) extends ShuffleManager 
         shuffleId, numMaps, dependency.asInstanceOf[ShuffleDependency[K, V, V]])
     } else if (SortShuffleManager.canUseSerializedShuffle(dependency)) {
       // Otherwise, try to buffer map outputs in a serialized form, since this is more efficient:
+      // 序列化排序方式：在满足以下所有三个条件时使用：
+      //    1. Shuffle依赖项没有指定聚合或输出排序。
+      //    2. Shuffle序列化程序支持序列化值的重定位（这是目前的由KryoSerializer和Spark SQL的自定义序列化程序支持）。
+      //    3. Shuffle产生的输出分区ID小于16777216，也即是最多只能有16777216个分区（分区ID从0开始计算）。
+      // 注：为什么此处规定Shuffle产生的输出分区最多只能有16777216个？
+      // 这是由于在SerializedShuffleHandle对应的UnsafeShuffleWriter中，使用复合指针同时记录键值对数据的分区ID、内存页号和偏移量，
+      // 实际上，一个指针即是一个Long类型整数，其中分区ID占24位，页号占13位，偏移量占27位；由于分区ID只占24位，
+      // 而24位二进制数最大可表示的十进制是16777215，因此最大只能记录16777216个分区（分区ID从0开始计算）。
       new SerializedShuffleHandle[K, V](
         shuffleId, numMaps, dependency.asInstanceOf[ShuffleDependency[K, V, V]])
     } else {
@@ -152,6 +183,7 @@ private[spark] class SortShuffleManager(conf: SparkConf) extends ShuffleManager 
 
   /** Remove a shuffle's metadata from the ShuffleManager. */
   override def unregisterShuffle(shuffleId: Int): Boolean = {
+    // 取消注册时会从numMapsForShuffle和shuffleBlockResolver中移除该Shuffle过程相关的信息以及产生的文件。
     Option(numMapsForShuffle.remove(shuffleId)).foreach { numMaps =>
       (0 until numMaps).foreach { mapId =>
         shuffleBlockResolver.removeDataByMap(shuffleId, mapId)

@@ -97,6 +97,7 @@ public class TransportRequestHandler extends MessageHandler<RequestMessage> {
 
   @Override
   public void handle(RequestMessage request) {
+    // 根据request类型
     if (request instanceof ChunkFetchRequest) {
       processFetchRequest((ChunkFetchRequest) request);
     } else if (request instanceof RpcRequest) {
