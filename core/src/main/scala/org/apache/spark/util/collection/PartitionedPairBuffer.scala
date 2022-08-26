@@ -26,16 +26,20 @@ import org.apache.spark.util.collection.WritablePartitionedPairCollection._
 /**
  * Append-only buffer of key-value pairs, each with a corresponding partition ID, that keeps track
  * of its estimated size in bytes.
- *
+ * 将键值对缓存在内存中，并支持对元素进行排序的数据结构
+ * 它并不考虑键重复的问题，键值对在数组中顺序存放，键是类型为(分区ID, 键)的二元元组，值即是指定类型的值。
  * The buffer can support up to 1073741819 elements.
+ * 最大支持1073741819个元素
  */
 private[spark] class PartitionedPairBuffer[K, V](initialCapacity: Int = 64)
   extends WritablePartitionedPairCollection[K, V] with SizeTracker
 {
   import PartitionedPairBuffer._
 
+  // 检查初始容量是否超限，2 ^ 30 - 1
   require(initialCapacity <= MAXIMUM_CAPACITY,
     s"Can't make capacity bigger than ${MAXIMUM_CAPACITY} elements")
+  // 同时初始容量要大于或等于1
   require(initialCapacity >= 1, "Invalid initial capacity")
 
   // Basic growable array data structure. We use a single array of AnyRef to hold both the keys

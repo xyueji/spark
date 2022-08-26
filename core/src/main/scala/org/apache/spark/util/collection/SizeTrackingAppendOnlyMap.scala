@@ -23,17 +23,20 @@ package org.apache.spark.util.collection
 private[spark] class SizeTrackingAppendOnlyMap[K, V]
   extends AppendOnlyMap[K, V] with SizeTracker
 {
+  // 更新或添加键值对
   override def update(key: K, value: V): Unit = {
     super.update(key, value)
     super.afterUpdate()
   }
 
+  // 对value聚合操作
   override def changeValue(key: K, updateFunc: (Boolean, V) => V): V = {
     val newValue = super.changeValue(key, updateFunc)
     super.afterUpdate()
     newValue
   }
 
+  // 扩容操作
   override protected def growTable(): Unit = {
     super.growTable()
     resetSamples()

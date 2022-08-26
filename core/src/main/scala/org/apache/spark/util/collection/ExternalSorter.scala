@@ -85,6 +85,13 @@ import org.apache.spark.storage.{BlockId, DiskBlockObjectWriter}
  *    each other for equality to merge values.
  *
  *  - Users are expected to call stop() at the end to delete all the intermediate files.
+ *
+ * ExternalSorter除了会将Map任务的输出数据存储到JVM的堆中，如果指定了聚合函数，则还会对数据进行聚合。
+ * ExternalSorter会使用分区器将数组分组到对应的分区中，然后使用自定义比较器对每个分区中的数据以键进行可选的排序，
+ * 并将每个分区的数据输出到单个文件的不同字节范围中，减少生成的文件数量，便于Reduce端的Shuffle获取。
+ *
+ * ExternalSorter是SortShuffleWriter的依赖组件，在ShuffleMapTask最后阶段使用SortShuffleWriter进行Map任务输出数据写出时，
+ * 就会根据ShuffleDependency的情况来创建对应的ExternalSorter
  */
 private[spark] class ExternalSorter[K, V, C](
     context: TaskContext,
@@ -97,18 +104,25 @@ private[spark] class ExternalSorter[K, V, C](
 
   private val conf = SparkEnv.get.conf
 
+  // 分区数量。默认为1。
   private val numPartitions = partitioner.map(_.numPartitions).getOrElse(1)
+  // 是否有分区。当numPartitions大于1时为true。
   private val shouldPartition = numPartitions > 1
+  // 使用分区器获取键的分区
   private def getPartition(key: K): Int = {
     if (shouldPartition) partitioner.get.getPartition(key) else 0
   }
 
+  // SparkEnv的子组件BlockManager
   private val blockManager = SparkEnv.get.blockManager
+  // BlockManager的子组件DiskBlockManager
   private val diskBlockManager = blockManager.diskBlockManager
+  // SparkEnv的子组件SerializerManager
   private val serializerManager = SparkEnv.get.serializerManager
   private val serInstance = serializer.newInstance()
 
   // Use getSizeAsKb (not bytes) to maintain backwards compatibility if no units are provided
+  // 用于设置DiskBlockObjectWriter内部的文件缓冲大小。可通过spark.shuffle.file.buffer属性进行配置，默认是32KB。
   private val fileBufferSize = conf.getSizeAsKb("spark.shuffle.file.buffer", "32k").toInt * 1024
 
   // Size of object batches when reading/writing from serializers.
@@ -118,24 +132,62 @@ private[spark] class ExternalSorter[K, V, C](
   //
   // NOTE: Setting this too low can cause excessive copying when serializing, since some serializers
   // grow internal data structures by growing + copying every time the number of objects doubles.
+  /**
+   * 用于将DiskBlockObjectWriter内部的文件缓冲写到磁盘的大小。
+   * 可通过spark.shuffle.spill.batchSize属性进行配置，默认是10000。
+   */
   private val serializerBatchSize = conf.getLong("spark.shuffle.spill.batchSize", 10000)
 
   // Data structures to store in-memory objects before we spill. Depending on whether we have an
   // Aggregator set, we either put objects into an AppendOnlyMap where we combine them, or we
   // store them in an array buffer.
+  /**
+   * 当设置了聚合器（Aggregator）时，Map端将中间结果溢出到磁盘前，
+   * 先利用此数据结构在内存中对中间结果进行聚合处理。
+   *                                          SizeTracker   AppendOnlyMap
+   *                                                /             \
+   *  WritablePartitionedPairCollection       SizeTrackingAppendOnlyMap
+   *                          \                   /
+   *                        PartitionedAppendOnlyMap
+   * SizeTracker: 主要提供采样统计功能，用于估算Shuffle过程中对内存的使用，为内存扩充及溢写操作提供前置决策功能。
+   * WritablePartitionedPairCollection: 对键值对数据提供关联分区的集合，它在原始键值对数据的基础上，增加了对分区ID的记录，
+   *                                    并支持对增强后的键值对进行基于内存的排序操作。
+   * SizeTrackingAppendOnlyMap: 混入SizeTracker特质，并继承AppendOnlyMap类，因此该组件提供了在内存中对任务执行结果进行更新或聚合运算的同时，
+   *                            并对自身的大小进行样本采集和大小估算的功能。
+   * AppendOnlyMap：Spark自定义的Map字典结构，支持对null值进行存储，并提供了基于内存的聚合运算操作。
+   */
   @volatile private var map = new PartitionedAppendOnlyMap[K, C]
+  /**
+   * 当没有设置聚合器（Aggregator）时，Map端将中间结果溢出到磁盘前，
+   * 先利用此数据结构将中间结果存储在内存中。
+   * WritablePartitionedPairCollection      SizeTracker
+   *                              \           /
+   *                          PartitionedPairBuffer
+   */
   @volatile private var buffer = new PartitionedPairBuffer[K, C]
 
   // Total spilling statistics
+  // 用于对溢出到磁盘的字节数进行统计（单位为字节）。
   private var _diskBytesSpilled = 0L
   def diskBytesSpilled: Long = _diskBytesSpilled
 
   // Peak size of the in-memory data structure observed so far, in bytes
+  // 内存中数据结构大小的峰值（单位为字节）。
   private var _peakMemoryUsedBytes: Long = 0L
   def peakMemoryUsedBytes: Long = _peakMemoryUsedBytes
 
+  // 是否对Shuffle数据进行排序
   @volatile private var isShuffleSort: Boolean = true
+  /**
+   * 缓存强制溢出的文件数组。
+   * SpilledFile保存了溢出文件的信息，包括：
+   * - file（文件）
+   * - blockId（BlockId）
+   * - serializerBatchSizes
+   * - elementsPerPartition（每个分区的元素数量）。
+   */
   private val forceSpillFiles = new ArrayBuffer[SpilledFile]
+  // 用于包装内存中数据的迭代器和溢出文件，并表现为一个新的迭代器。
   @volatile private var readingIterator: SpillableIterator = null
 
   // A comparator for keys K that orders them within a partition to allow aggregation or sorting.
@@ -143,6 +195,10 @@ private[spark] class ExternalSorter[K, V, C](
   // user. (A partial ordering means that equal keys have comparator.compare(k, k) = 0, but some
   // non-equal keys also have this, so we need to do a later pass to find truly equal keys).
   // Note that we ignore this if no aggregator and no ordering are given.
+  // 中间输出的key的比较器。用于在分区内对中间结果按照key进行排序，以便于聚合。
+  // keyComparator字段记录了当前ExternalSorter所使用的比较器，它会首先从ordering参数中获取，
+  // 如果获取不到则构建默认的比较器，默认比较器会按照键的哈希值进行比较。
+  // comparator()方法才是获取比较器的主要方法，它会根据ordering或aggregator是否被定义来决定是否返回keyComparator比较器。
   private val keyComparator: Comparator[K] = ordering.getOrElse(new Comparator[K] {
     override def compare(a: K, b: K): Int = {
       val h1 = if (a == null) 0 else a.hashCode()
@@ -168,6 +224,7 @@ private[spark] class ExternalSorter[K, V, C](
     serializerBatchSizes: Array[Long],
     elementsPerPartition: Array[Long])
 
+  // 缓存溢出的文件数组。
   private val spills = new ArrayBuffer[SpilledFile]
 
   /**
@@ -180,26 +237,39 @@ private[spark] class ExternalSorter[K, V, C](
     // TODO: stop combining if we find that the reduction factor isn't high
     val shouldCombine = aggregator.isDefined
 
+    // 如果用户指定了聚合器，那么对数据进行聚合
     if (shouldCombine) {
       // Combine values in-memory first using our AppendOnlyMap
+      // 获取聚合器的mergeValue函数，此函数用于将新的Value合并到聚合的结果中
       val mergeValue = aggregator.get.mergeValue
+      // 获取聚合器的createCombiner函数，此函数用于创建聚合的初始值。
       val createCombiner = aggregator.get.createCombiner
       var kv: Product2[K, V] = null
+      /**
+       * 定义偏函数，当有新的Value时，调用mergeValue函数将新的Value合并到之前聚合的结果中，
+       * 否则说明刚刚开始聚合，此时调用createCombiner函数以Value作为聚合的初始值
+       */
       val update = (hadValue: Boolean, oldValue: C) => {
         if (hadValue) mergeValue(oldValue, kv._2) else createCombiner(kv._2)
       }
+      // 迭代输入的记录
       while (records.hasNext) {
+        // 增加已经读取的元素数
         addElementsRead()
         kv = records.next()
+        // 计算分区索引（ID），将分区索引与key、update偏函数作为参数对由分区索引与key组成的对偶进行聚合
         map.changeValue((getPartition(kv._1), kv._1), update)
+        // 进行可能的磁盘溢出
         maybeSpillCollection(usingMap = true)
       }
     } else {
+      // 如果用户没有指定聚合器，只对数据进行缓冲
       // Stick values into our buffer
       while (records.hasNext) {
         addElementsRead()
         val kv = records.next()
         buffer.insert(getPartition(kv._1), kv._1, kv._2.asInstanceOf[C])
+        // 进行可能的磁盘溢出
         maybeSpillCollection(usingMap = false)
       }
     }

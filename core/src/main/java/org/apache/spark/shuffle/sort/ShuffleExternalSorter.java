@@ -358,6 +358,7 @@ final class ShuffleExternalSorter extends MemoryConsumer {
     // Reset the in-memory sorter's pointer array only after freeing up the memory pages holding the
     // records. Otherwise, if the task is over allocated memory, then without freeing the memory
     // pages, we might not be able to get memory for the pointer array.
+    // 更新任务度量信息
     taskContext.taskMetrics().incMemoryBytesSpilled(spillSize);
     return spillSize;
   }
@@ -402,11 +403,14 @@ final class ShuffleExternalSorter extends MemoryConsumer {
    * Force all memory and spill files to be deleted; called by shuffle error-handling code.
    */
   public void cleanupResources() {
+    // 清空内存
     freeMemory();
     if (inMemSorter != null) {
+      // 释放内存排序器占用的内存
       inMemSorter.free();
       inMemSorter = null;
     }
+    // 删除所有的溢写文件
     for (SpillInfo spill : spills) {
       if (spill.file.exists() && !spill.file.delete()) {
         logger.error("Unable to delete spill file {}", spill.file.getPath());
@@ -531,6 +535,7 @@ final class ShuffleExternalSorter extends MemoryConsumer {
 
   /**
    * Close the sorter, causing any buffered data to be sorted and written out to disk.
+   * 关闭排序器，这个操作会触发对排序器中缓存的数据进行排序并将它们溢写到磁盘。
    *
    * @return metadata for the spill files written by this sorter. If no records were ever inserted
    *         into this sorter, then this will return an empty array.
@@ -539,11 +544,15 @@ final class ShuffleExternalSorter extends MemoryConsumer {
   public SpillInfo[] closeAndGetSpills() throws IOException {
     if (inMemSorter != null) {
       // Do not count the final file towards the spill count.
+      // 传入的isLastFile为true
       writeSortedFile(true);
+      // 释放内存
       freeMemory();
+      // 释放排序器内存
       inMemSorter.free();
       inMemSorter = null;
     }
+    // 将spills数组重新构建为一个新的SpillInfo数组并返回
     return spills.toArray(new SpillInfo[spills.size()]);
   }
 
