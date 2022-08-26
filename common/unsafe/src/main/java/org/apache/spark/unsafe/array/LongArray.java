@@ -80,6 +80,8 @@ public final class LongArray {
   public void set(int index, long value) {
     assert index >= 0 : "index (" + index + ") should >= 0";
     assert index < length : "index (" + index + ") should < length (" + length + ")";
+    // 插入到baseObj的指定位置，baseObj就是MemoryBlock的obj
+    // WIDTH固定为8，表示8个字节。
     Platform.putLong(baseObj, baseOffset + index * WIDTH, value);
   }
 

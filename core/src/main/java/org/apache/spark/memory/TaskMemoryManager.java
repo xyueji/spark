@@ -55,15 +55,23 @@ import org.apache.spark.util.Utils;
  * This allows us to address 8192 pages. In on-heap mode, the maximum page size is limited by the
  * maximum size of a long[] array, allowing us to address 8192 * (2^31 - 1) * 8 bytes, which is
  * approximately 140 terabytes of memory.
+ * 使用64 bit的long型变量记录Record信息，分为2个部分：
+ *    [13 bit 内存页号][51 bit 内存偏移量]
  */
 public class TaskMemoryManager {
 
   private static final Logger logger = LoggerFactory.getLogger(TaskMemoryManager.class);
 
-  /** The number of bits used to address the page table. */
+  /**
+   * The number of bits used to address the page table.
+   * 页位数：13
+   */
   private static final int PAGE_NUMBER_BITS = 13;
 
-  /** The number of bits used to encode offsets in data pages. */
+  /**
+   * The number of bits used to encode offsets in data pages.
+   * 偏移量位数：51
+   */
   @VisibleForTesting
   static final int OFFSET_BITS = 64 - PAGE_NUMBER_BITS;  // 51
 

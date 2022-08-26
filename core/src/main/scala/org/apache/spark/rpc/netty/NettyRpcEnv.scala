@@ -661,6 +661,7 @@ private[netty] class NettyRpcHandler(
     streamManager: StreamManager) extends RpcHandler with Logging {
 
   // A variable to track the remote RpcEnv addresses of all clients
+  // 用于跟踪远程客户端的RpcEnv地址的字典
   private val remoteAddresses = new ConcurrentHashMap[RpcAddress, RpcAddress]()
 
   override def receive(
@@ -703,11 +704,13 @@ private[netty] class NettyRpcHandler(
     val addr = client.getChannel.remoteAddress().asInstanceOf[InetSocketAddress]
     if (addr != null) {
       val clientAddr = RpcAddress(addr.getHostString, addr.getPort)
+      // 投递RemoteProcessConnectionError事件，包含的是远端Client地址
       dispatcher.postToAll(RemoteProcessConnectionError(cause, clientAddr))
       // If the remove RpcEnv listens to some address, we should also fire a
       // RemoteProcessConnectionError for the remote RpcEnv listening address
       val remoteEnvAddress = remoteAddresses.get(clientAddr)
       if (remoteEnvAddress != null) {
+        // 投递RemoteProcessConnectionError事件，包含的是远端Server地址
         dispatcher.postToAll(RemoteProcessConnectionError(cause, remoteEnvAddress))
       }
     } else {
@@ -718,10 +721,12 @@ private[netty] class NettyRpcHandler(
     }
   }
 
+  // Channel激活时调用
   override def channelActive(client: TransportClient): Unit = {
     val addr = client.getChannel().remoteAddress().asInstanceOf[InetSocketAddress]
     assert(addr != null)
     val clientAddr = RpcAddress(addr.getHostString, addr.getPort)
+    // 投递RemoteProcessConnected消息，包含的是远端Client地址
     dispatcher.postToAll(RemoteProcessConnected(clientAddr))
   }
 

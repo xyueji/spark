@@ -142,12 +142,14 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     this.taskContext = taskContext;
     this.sparkConf = sparkConf;
     this.transferToEnabled = sparkConf.getBoolean("spark.file.transferTo", true);
+    // 指定的是ShuffleInMemorySorter初始化内存大小，通过spark.shuffle.sort.initialBufferSize参数配置，默认为4096。
     this.initialSortBufferSize = sparkConf.getInt("spark.shuffle.sort.initialBufferSize",
                                                   DEFAULT_INITIAL_SORT_BUFFER_SIZE);
     this.inputBufferSizeInBytes =
       (int) (long) sparkConf.get(package$.MODULE$.SHUFFLE_FILE_BUFFER_SIZE()) * 1024;
     this.outputBufferSizeInBytes =
       (int) (long) sparkConf.get(package$.MODULE$.SHUFFLE_UNSAFE_FILE_OUTPUT_BUFFER_SIZE()) * 1024;
+    // 初始化调用，创建Shuffle排序器ShuffleExternalSorter
     open();
   }
 
@@ -213,11 +215,15 @@ public class UnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
       memoryManager,
       blockManager,
       taskContext,
+            // 初始化缓冲大小
       initialSortBufferSize,
+            // 分区总数
       partitioner.numPartitions(),
       sparkConf,
       writeMetrics);
+    // 序列化缓冲
     serBuffer = new MyByteArrayOutputStream(DEFAULT_INITIAL_SER_BUFFER_SIZE);
+    // 包装为序列化流对象
     serOutputStream = serializer.serializeStream(serBuffer);
   }
 

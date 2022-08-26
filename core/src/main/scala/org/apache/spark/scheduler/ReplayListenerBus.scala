@@ -54,7 +54,9 @@ private[spark] class ReplayListenerBus extends SparkListenerBus with Logging {
       sourceName: String,
       maybeTruncated: Boolean = false,
       eventsFilter: ReplayEventsFilter = SELECT_ALL_FILTER): Unit = {
+    // 从logData指定的输入流中读取事件数据，并转换为迭代器，迭代元素都是字符串
     val lines = Source.fromInputStream(logData).getLines()
+    // 使用replay()方法进行事件重播
     replay(lines, sourceName, maybeTruncated, eventsFilter)
   }
 

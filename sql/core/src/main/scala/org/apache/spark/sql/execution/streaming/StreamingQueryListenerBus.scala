@@ -34,6 +34,12 @@ import org.apache.spark.util.ListenerBus
  * Note that each bus and its registered listeners are associated with a single SparkSession
  * and StreamingQueryManager. So this bus will dispatch events to registered listeners for only
  * those queries that were started in the associated SparkSession.
+ *
+ * StreamingQueryListenerBus作用于Spark Streaming和Spark SQL组件，
+ * 它通过继承SparkListener事件类让自己也成为一个监听器，同时它也继承了ListenerBus，
+ * 维护的监听器需要是StreamingQueryListener类型，接收的事件需要是StreamingQueryListener.Event类型的。
+ * StreamingQueryListenerBus的构造方法接收一个LiveListenerBus类型的参数sparkListenerBus，
+ * 在初始化时它会将自己添加到sparkListenerBus事件总线中
  */
 class StreamingQueryListenerBus(sparkListenerBus: LiveListenerBus)
   extends SparkListener with ListenerBus[StreamingQueryListener, StreamingQueryListener.Event] {
@@ -66,6 +72,7 @@ class StreamingQueryListenerBus(sparkListenerBus: LiveListenerBus)
   def post(event: StreamingQueryListener.Event) {
     event match {
       case s: QueryStartedEvent =>
+        // 记录Query事件的runId
         activeQueryRunIds.synchronized { activeQueryRunIds += s.runId }
         sparkListenerBus.post(s)
         // post to local listeners to trigger callbacks

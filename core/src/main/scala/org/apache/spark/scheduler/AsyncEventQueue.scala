@@ -33,6 +33,7 @@ import org.apache.spark.util.Utils
  *
  * Delivery will only begin when the `start()` method is called. The `stop()` method should be
  * called when no more events need to be delivered.
+ * 内部会使用一个单独的线程处理投递进来的事件，通过信号量来协调进行事件投递的线程和处理事件的线程之间的配合
  */
 private class AsyncEventQueue(
     val name: String,
@@ -46,6 +47,9 @@ private class AsyncEventQueue(
 
   // Cap the capacity of the queue so we get an explicit error (rather than an OOM exception) if
   // it's perpetually being added to more quickly than it's being drained.
+  // SparkListenerEvent事件的阻塞队列，
+  // 队列大小可以通过Spark属性spark.scheduler.listenerbus.eventqueue.size进行配置，
+  // 默认为10000（Spark早期版本中属于静态属性，固定为10000）。
   private val eventQueue = new LinkedBlockingQueue[SparkListenerEvent](
     conf.get(LISTENER_BUS_EVENT_QUEUE_CAPACITY))
 
@@ -77,6 +81,8 @@ private class AsyncEventQueue(
     override def getValue: Int = eventQueue.size()
   })
 
+  // 守护进程，不断从eventQueue获取SparkListenerEvent，进行postToAll操作
+  // 将事件投递给所有监听者
   private val dispatchThread = new Thread(s"spark-listener-group-$name") {
     setDaemon(true)
     override def run(): Unit = Utils.tryOrStopSparkContext(sc) {
@@ -86,6 +92,7 @@ private class AsyncEventQueue(
 
   private def dispatch(): Unit = LiveListenerBus.withinListenerThread.withValue(true) {
     var next: SparkListenerEvent = eventQueue.take()
+    // PoisonPill意思是"毒药"，用于终止当前线程
     while (next != POISON_PILL) {
       val ctx = processingTime.time()
       try {
@@ -93,6 +100,7 @@ private class AsyncEventQueue(
       } finally {
         ctx.stop()
       }
+      // 事件数-1
       eventCount.decrementAndGet()
       next = eventQueue.take()
     }
