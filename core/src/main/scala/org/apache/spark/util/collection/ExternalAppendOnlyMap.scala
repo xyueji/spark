@@ -50,6 +50,23 @@ import org.apache.spark.util.collection.ExternalAppendOnlyMap.HashComparator
  * However, if the spill threshold is too low, we spill frequently and incur unnecessary disk
  * writes. This may lead to a performance regression compared to the normal case of using the
  * non-spilling AppendOnlyMap.
+ *
+ * 仅支持添加操作的字典，该字典会在使用空间过大时对数据进行溢写。
+ *
+ * 对于溢写阈值的设置需要权衡两点：
+ * 1. 如果溢写阈值设置过高，可能会由于字典占据过大内存导致OOM。
+ * 2. 如果溢写阈值设置过低，可能会导致过于频繁的不必要的溢写，因此导致性能下降。
+ *
+ * @param createCombiner 值初始化函数
+ * @param mergeValue 分区内值合并函数
+ * @param mergeCombiners 分区间合并函数
+ * @param serializer 序列化器
+ * @param blockManager BlockManager
+ * @param context
+ * @param serializerManager 序列化管理器
+ * @tparam K 键类型
+ * @tparam V 值类型
+ * @tparam C 聚合后的值类型
  */
 @DeveloperApi
 class ExternalAppendOnlyMap[K, V, C](
@@ -83,9 +100,12 @@ class ExternalAppendOnlyMap[K, V, C](
   /**
    * Exposed for testing
    */
+  // 当前用于存储数据的Map，底层其实还是使用了AppendOnlyMap
   @volatile private[collection] var currentMap = new SizeTrackingAppendOnlyMap[K, C]
+  // 溢写的Map
   private val spilledMaps = new ArrayBuffer[DiskMapIterator]
   private val sparkConf = SparkEnv.get.conf
+  // DiskBlockManager对象
   private val diskBlockManager = blockManager.diskBlockManager
 
   /**
@@ -96,14 +116,17 @@ class ExternalAppendOnlyMap[K, V, C](
    *
    * NOTE: Setting this too low can cause excessive copying when serializing, since some serializers
    * grow internal data structures by growing + copying every time the number of objects doubles.
+   * 溢写过程中序列化器读写操作的批次大小
    */
   private val serializerBatchSize = sparkConf.getLong("spark.shuffle.spill.batchSize", 10000)
 
   // Number of bytes spilled in total
+  // 已经溢写的数据的字节总数
   private var _diskBytesSpilled = 0L
   def diskBytesSpilled: Long = _diskBytesSpilled
 
   // Use getSizeAsKb (not bytes) to maintain backwards compatibility if no units are provided
+  // 文件缓冲区大小
   private val fileBufferSize =
     sparkConf.getSizeAsKb("spark.shuffle.file.buffer", "32k").toInt * 1024
 
@@ -111,10 +134,13 @@ class ExternalAppendOnlyMap[K, V, C](
   private val writeMetrics: ShuffleWriteMetrics = new ShuffleWriteMetrics()
 
   // Peak size of the in-memory map observed so far, in bytes
+  // 内存使用的峰值
   private var _peakMemoryUsedBytes: Long = 0L
   def peakMemoryUsedBytes: Long = _peakMemoryUsedBytes
 
+  // 键比较器，默认为Hash比较器
   private val keyComparator = new HashComparator[K]
+  // 序列化器
   private val ser = serializer.newInstance()
 
   @volatile private var readingIterator: SpillableIterator = null
@@ -122,11 +148,13 @@ class ExternalAppendOnlyMap[K, V, C](
   /**
    * Number of files this map has spilled so far.
    * Exposed for testing.
+   * 已经溢写的文件数量
    */
   private[collection] def numSpills: Int = spilledMaps.size
 
   /**
    * Insert the given key and value into the map.
+   * 插入键值对数据
    */
   def insert(key: K, value: V): Unit = {
     insertAll(Iterator((key, value)))
@@ -140,8 +168,10 @@ class ExternalAppendOnlyMap[K, V, C](
    * otherwise, spill the in-memory map to disk.
    *
    * The shuffle memory usage of the first trackMemoryThreshold entries is not tracked.
+   * 插入数据的主要方法
    */
   def insertAll(entries: Iterator[Product2[K, V]]): Unit = {
+    // 检查currentMap是否为null，如果currentMap为null，说明已经调用了ExternalAppendOnlyMap的迭代器方法
     if (currentMap == null) {
       throw new IllegalStateException(
         "Cannot insert new elements into a map after calling iterator")
@@ -149,20 +179,29 @@ class ExternalAppendOnlyMap[K, V, C](
     // An update function for the map that we reuse across entries to avoid allocating
     // a new closure each time
     var curEntry: Product2[K, V] = null
+    // 聚合函数
     val update: (Boolean, C) => C = (hadVal, oldVal) => {
       if (hadVal) mergeValue(oldVal, curEntry._2) else createCombiner(curEntry._2)
     }
 
+    // 迭代传入的记录
     while (entries.hasNext) {
+      // 获取记录
       curEntry = entries.next()
+      // 估算当前currentMap的大小
       val estimatedSize = currentMap.estimateSize()
+      // 如果currentMap的大小大于之前记录的内存使用峰值，则更新内存使用峰值
       if (estimatedSize > _peakMemoryUsedBytes) {
         _peakMemoryUsedBytes = estimatedSize
       }
+      // 检查是否需要溢写，该方法返回值表示是否发生了溢写
       if (maybeSpill(currentMap, estimatedSize)) {
+        // 如果发生溢写，则重新构建一个新的SizeTrackingAppendOnlyMap赋值给currentMap
         currentMap = new SizeTrackingAppendOnlyMap[K, C]
       }
+      // 进行数据聚合
       currentMap.changeValue(curEntry._1, update)
+      // 更新已插入的键值对计数
       addElementsRead()
     }
   }
@@ -182,10 +221,14 @@ class ExternalAppendOnlyMap[K, V, C](
 
   /**
    * Sort the existing contents of the in-memory map and spill them to a temporary file on disk.
+   * 溢写操作
    */
   override protected[this] def spill(collection: SizeTracker): Unit = {
+    // 获取对currentMap中的数据使用keyComparator比较器进行排序后的键值对迭代器
     val inMemoryIterator = currentMap.destructiveSortedIterator(keyComparator)
+    // 使用spillMemoryIteratorToDisk()方法进行溢写
     val diskMapIterator = spillMemoryIteratorToDisk(inMemoryIterator)
+    // 将溢写后得到的迭代器保存到spilledMaps数组中
     spilledMaps += diskMapIterator
   }
 
@@ -211,46 +254,70 @@ class ExternalAppendOnlyMap[K, V, C](
 
   /**
    * Spill the in-memory Iterator to a temporary file on disk.
+   * 溢写操作，它会将经过排序的当前currentMap中的数据溢写到磁盘
    */
   private[this] def spillMemoryIteratorToDisk(inMemoryIterator: Iterator[(K, C)])
       : DiskMapIterator = {
+    // 创建临时文件，命名为"temp_local_"前缀加上UUID字符串
     val (blockId, file) = diskBlockManager.createTempLocalBlock()
+    // 获取临时文件的DiskBlockObjectWriter
     val writer = blockManager.getDiskWriter(blockId, file, ser, fileBufferSize, writeMetrics)
+    // 记录每个批次溢写的键值对数量
     var objectsWritten = 0
 
     // List of batch sizes (bytes) in the order they are written to disk
+    // 记录溢写操作中每个批次的数据的字节大小
     val batchSizes = new ArrayBuffer[Long]
 
     // Flush the disk writer's contents to disk, and update relevant variables
+    // 刷盘操作
     def flush(): Unit = {
+      // DiskBlockObjectWriter进行刷盘，返回FileSegment对象
       val segment = writer.commitAndGet()
+      // 记录该批次刷盘后的数据大小
       batchSizes += segment.length
+      // 更新已溢写数据的总大小
       _diskBytesSpilled += segment.length
+      // 重置objectsWritten计数
       objectsWritten = 0
     }
 
     var success = false
     try {
+      // 迭代键值对记录
       while (inMemoryIterator.hasNext) {
         val kv = inMemoryIterator.next()
+        // 使用DiskBlockObjectWriter向临时文件写入键值对
         writer.write(kv._1, kv._2)
+        // 维护objectsWritten计数
         objectsWritten += 1
 
+        /*
+         * 如果写入的键值对数量达到了批次刷盘阈值serializerBatchSize，则进行刷盘
+         * serializerBatchSize由spark.shuffle.spill.batchSize参数配置，默认为10000，
+         * 也即是10000条键值对刷一次盘
+         */
         if (objectsWritten == serializerBatchSize) {
           flush()
         }
       }
+      // 所有键值对记录都迭代完了，检查是否还有未刷盘的数据
       if (objectsWritten > 0) {
+        // 进行刷盘，并关闭DiskBlockObjectWriter
         flush()
         writer.close()
       } else {
+        // 否则说明最后一次没有任何写出，那么放弃最后一次写出并关闭DiskBlockObjectWriter
         writer.revertPartialWritesAndClose()
       }
+      // 标记写出成功
       success = true
     } finally {
       if (!success) {
+        // 写出不成功
         // This code path only happens if an exception was thrown above before we set success;
         // close our stuff and let the exception be thrown further
+        // 放弃最后一次写出，关闭DiskBlockObjectWriter，并删除临时文件
         writer.revertPartialWritesAndClose()
         if (file.exists()) {
           if (!file.delete()) {
@@ -259,7 +326,7 @@ class ExternalAppendOnlyMap[K, V, C](
         }
       }
     }
-
+    // 将溢写的文件、BlockId及记录了每个批次数据大小的数组封装为DiskMapIterator对象返回
     new DiskMapIterator(file, blockId, batchSizes)
   }
 
@@ -276,6 +343,7 @@ class ExternalAppendOnlyMap[K, V, C](
   /**
    * Return a destructive iterator that merges the in-memory map with the spilled maps.
    * If no spill has occurred, simply return the in-memory map's iterator.
+   * 获取迭代器
    */
   override def iterator: Iterator[(K, C)] = {
     if (currentMap == null) {
@@ -283,8 +351,14 @@ class ExternalAppendOnlyMap[K, V, C](
         "ExternalAppendOnlyMap.iterator is destructive and should only be called once.")
     }
     if (spilledMaps.isEmpty) {
+      /*
+       * 如果没有溢写的数据，则返回CompletionIterator迭代器
+       * CompletionIterator迭代器对迭代操作进行了封装，
+       * 当迭代完成后会调用freeCurrentMap()方法将currentMap置为null并释放内存
+       */
       destructiveIterator(currentMap.iterator)
     } else {
+      // 发生过溢写数据
       new ExternalIterator()
     }
   }

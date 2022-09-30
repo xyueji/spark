@@ -95,7 +95,9 @@ private[spark] class ShuffleMapTask(
     var writer: ShuffleWriter[Any, Any] = null
     try {
       val manager = SparkEnv.get.shuffleManager
+      // 获取对指定分区的数据进行磁盘写操作的SortShuffleWriter
       writer = manager.getWriter[Any, Any](dep.shuffleHandle, partitionId, context)
+      // 调用RDD的iterator方法进行迭代计算，将计算的中间结果写入磁盘文件
       writer.write(rdd.iterator(partition, context).asInstanceOf[Iterator[_ <: Product2[Any, Any]]])
       writer.stop(success = true).get
     } catch {
