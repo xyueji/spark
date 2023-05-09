@@ -122,7 +122,7 @@ private[spark] class SortShuffleManager(conf: SparkConf) extends ShuffleManager 
     } else if (SortShuffleManager.canUseSerializedShuffle(dependency)) {
       // Otherwise, try to buffer map outputs in a serialized form, since this is more efficient:
       // 序列化排序方式：在满足以下所有三个条件时使用：
-      //    1. Shuffle依赖项没有指定聚合或输出排序。
+      //    1. Shuffle依赖项没有指定map端聚合。
       //    2. Shuffle序列化程序支持序列化值的重定位（这是目前的由KryoSerializer和Spark SQL的自定义序列化程序支持）。
       //    3. Shuffle产生的输出分区ID小于16777216，也即是最多只能有16777216个分区（分区ID从0开始计算）。
       // 注：为什么此处规定Shuffle产生的输出分区最多只能有16777216个？

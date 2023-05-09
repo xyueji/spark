@@ -42,6 +42,7 @@ object SparkTransportConf {
 
   /**
    * Utility for creating a [[TransportConf]] from a [[SparkConf]].
+   * 可用于构造TransportConf配置对象
    * @param _conf the [[SparkConf]]
    * @param module the module name
    * @param numUsableCores if nonzero, this will restrict the server and client threads to only

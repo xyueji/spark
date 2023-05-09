@@ -41,16 +41,23 @@ import org.apache.spark.network.util.*;
 
 /**
  * Server for the efficient, low-level streaming service.
+ * RPC框架的服务端，提供高效的、低级别的流服务。
  */
 public class TransportServer implements Closeable {
   private static final Logger logger = LoggerFactory.getLogger(TransportServer.class);
 
+  // TransportContext上下文
   private final TransportContext context;
+  // TransportConf配置
   private final TransportConf conf;
+  // 发送消息的处理器
   private final RpcHandler appRpcHandler;
+  // 服务端传输引导器列表，该列表的引导器会在服务端Channel初始化时执行特定方法
   private final List<TransportServerBootstrap> bootstraps;
 
+  // Netty的ServerBootstrap
   private ServerBootstrap bootstrap;
+  // Netty的ChannelFuture
   private ChannelFuture channelFuture;
   private int port = -1;
   private NettyMemoryMetrics metrics;
@@ -88,9 +95,16 @@ public class TransportServer implements Closeable {
     return port;
   }
 
+  /**
+   * 初始化TransportServer，其内部会初始化ServerBootstrap
+   *
+   * @param hostToBind
+   * @param portToBind
+   */
   private void init(String hostToBind, int portToBind) {
-
+    // IO模式，默认为NIO，即spark.模块.io.mode
     IOMode ioMode = IOMode.valueOf(conf.ioMode());
+    // Netty服务端需同时创建bossGroup和workerGroup
     EventLoopGroup bossGroup =
       NettyUtils.createEventLoop(ioMode, conf.serverThreads(), conf.getModuleName() + "-server");
     EventLoopGroup workerGroup = bossGroup;
@@ -99,6 +113,7 @@ public class TransportServer implements Closeable {
     PooledByteBufAllocator allocator = NettyUtils.createPooledByteBufAllocator(
       conf.preferDirectBufs(), true /* allowCache */, conf.serverThreads());
 
+    // 创建Netty的服务端根引导程序并对其进行配置
     bootstrap = new ServerBootstrap()
       .group(bossGroup, workerGroup)
       .channel(NettyUtils.getServerChannelClass(ioMode))
@@ -136,11 +151,13 @@ public class TransportServer implements Closeable {
       }
     });
 
+    // 给根引导程序绑定Socket的监听端口
     InetSocketAddress address = hostToBind == null ?
         new InetSocketAddress(portToBind): new InetSocketAddress(hostToBind, portToBind);
     channelFuture = bootstrap.bind(address);
     channelFuture.syncUninterruptibly();
 
+    // 记录绑定端口
     port = ((InetSocketAddress) channelFuture.channel().localAddress()).getPort();
     logger.debug("Shuffle server started on port: {}", port);
   }

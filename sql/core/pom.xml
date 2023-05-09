@@ -151,6 +151,103 @@
       <artifactId>mockito-core</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- hive start -->
+    <dependency>
+      <groupId>org.apache.hive</groupId>
+      <artifactId>hive-jdbc</artifactId>
+      <version>3.1.2</version>
+      <scope>system</scope>
+      <systemPath>${basedir}/../../lib/hive-jdbc-3.1.2.jar</systemPath>
+      <exclusions>
+        <exclusion>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-runner</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <dependency>
+      <groupId>org.apache.hive</groupId>
+      <artifactId>hive-service-rpc</artifactId>
+      <version>3.1.2</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.hive</groupId>
+      <artifactId>hive-service</artifactId>
+      <version>3.1.2</version>
+      <exclusions>
+        <exclusion>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-runner</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.apache.logging.log4j</groupId>
+          <artifactId>log4j-1.2-api</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.apache.logging.log4j</groupId>
+          <artifactId>log4j-slf4j-impl</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-log4j12</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.hive</groupId>
+      <artifactId>hive-serde</artifactId>
+      <version>3.1.2</version>
+    </dependency>
+    <!-- hive end -->
+
+    <!-- impala start -->
+    <dependency>
+      <groupId>org.apache.thrift</groupId>
+      <artifactId>libthrift</artifactId>
+      <version>0.13.0</version>
+      <exclusions>
+        <exclusion>
+          <groupId>org.apache.httpcomponents</groupId>
+          <artifactId>httpclient</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.apache.httpcomponents</groupId>
+          <artifactId>httpcore</artifactId>
+        </exclusion>
+        <exclusion>
+          <artifactId>slf4j-api</artifactId>
+          <groupId>org.slf4j</groupId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>com.cloudera.impala.jdbc</groupId>
+      <artifactId>hive_metastore</artifactId>
+      <version>2.5.37</version>
+    </dependency>
+    <dependency>
+      <groupId>com.cloudera.impala.jdbc</groupId>
+      <artifactId>hive_service</artifactId>
+      <version>2.5.37</version>
+    </dependency>
+    <dependency>
+      <groupId>com.cloudera.impala.jdbc</groupId>
+      <artifactId>impalajdbc41</artifactId>
+      <version>2.5.37</version>
+    </dependency>
+    <dependency>
+      <groupId>com.cloudera.impala.jdbc</groupId>
+      <artifactId>ql</artifactId>
+      <version>2.5.37</version>
+    </dependency>
+    <dependency>
+      <groupId>com.cloudera.impala.jdbc</groupId>
+      <artifactId>TCLIServiceClient</artifactId>
+      <version>2.5.37</version>
+    </dependency>
+    <!-- impala end -->
+
   </dependencies>
   <build>
     <outputDirectory>target/scala-${scala.binary.version}/classes</outputDirectory>

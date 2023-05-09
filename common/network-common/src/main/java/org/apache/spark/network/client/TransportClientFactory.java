@@ -57,9 +57,13 @@ import org.apache.spark.network.util.*;
  */
 public class TransportClientFactory implements Closeable {
 
-  /** A simple data structure to track the pool of clients between two peer nodes. */
+  /**
+   * A simple data structure to track the pool of clients between two peer nodes.
+   * 在两个对等节点间维护的关于TransportClient的池子。
+   */
   private static class ClientPool {
     TransportClient[] clients;
+    // 该集合中的对象与clients集合中的对象按照索引对应，提供锁对象
     Object[] locks;
 
     ClientPool(int size) {
@@ -73,17 +77,32 @@ public class TransportClientFactory implements Closeable {
 
   private static final Logger logger = LoggerFactory.getLogger(TransportClientFactory.class);
 
+  // 对参数传递的TransportContext的引用
   private final TransportContext context;
+  // TransportConf实例，可以通过调用TransportContext的getConf获取
   private final TransportConf conf;
+  // 参数传递的TransportClientBootstrap列表
   private final List<TransportClientBootstrap> clientBootstraps;
+  // 针对每个Socket地址的连接池
   private final ConcurrentHashMap<SocketAddress, ClientPool> connectionPool;
 
-  /** Random number generator for picking connections between peers. */
+  /**
+   * Random number generator for picking connections between peers.
+   * 对Socket地址对应的连接池ClientPool中缓存的TransportClient进行随机选择，对每个连接做负载均衡。
+   */
   private final Random rand;
+  /**
+   * 每个远程地址的ClientPool池内最多可以存放的TransportClient的数量
+   * 由TransportConf的spark.模块名.io.numConnectionsPerPeer参数配置，默认为1
+   * 模块名实际为TransportConf的module字段
+   */
   private final int numConnectionsPerPeer;
 
+  // 客户端Channel被创建时使用的类
   private final Class<? extends Channel> socketChannelClass;
+  // 根据Netty的规范，客户端只有worker组，所以此处创建worker-Group。
   private EventLoopGroup workerGroup;
+  // 汇集ByteBuf但对本地线程缓存禁用的分配器。
   private PooledByteBufAllocator pooledAllocator;
   private final NettyMemoryMetrics metrics;
 
@@ -138,29 +157,42 @@ public class TransportClientFactory implements Closeable {
     // Get connection from the connection pool first.
     // If it is not found or not active, create a new one.
     // Use unresolved address here to avoid DNS resolution each time we creates a client.
+    // 主机和IP地址封装为InetSocketAddress
     final InetSocketAddress unresolvedAddress =
       InetSocketAddress.createUnresolved(remoteHost, remotePort);
 
     // Create the ClientPool if we don't have it yet.
+    // 尝试从connectionPool中获取该地址对应的ClientPool，如果没有就创建一个新的
     ClientPool clientPool = connectionPool.get(unresolvedAddress);
     if (clientPool == null) {
+      /*
+       * 使用“spark.模块名.io.numConnectionsPerPeer”属性配置获取numConnectionsPerPeer，默认为1
+       * ClientPool的构造过程中会创建其clients集合
+       */
       connectionPool.putIfAbsent(unresolvedAddress, new ClientPool(numConnectionsPerPeer));
       clientPool = connectionPool.get(unresolvedAddress);
     }
 
+    // 随机选择一个TransportClient
     int clientIndex = rand.nextInt(numConnectionsPerPeer);
     TransportClient cachedClient = clientPool.clients[clientIndex];
 
+    // 获取并返回激活的TransportClient
     if (cachedClient != null && cachedClient.isActive()) {
       // Make sure that the channel will not timeout by updating the last use time of the
       // handler. Then check that the client is still alive, in case it timed out before
       // this code was able to update things.
+      /*
+       * 更新TransportClient的Channel中配置的TransportChannelHandler内部的TransportResponseHandler
+       * 最后一次使用时间，确保TransportClient没有超时
+       */
       TransportChannelHandler handler = cachedClient.getChannel().pipeline()
         .get(TransportChannelHandler.class);
       synchronized (handler) {
         handler.getResponseHandler().updateTimeOfLastRequest();
       }
 
+      // 检查TransportClient是否是激活状态
       if (cachedClient.isActive()) {
         logger.trace("Returning cached connection to {}: {}",
           cachedClient.getSocketAddress(), cachedClient);
@@ -170,6 +202,7 @@ public class TransportClientFactory implements Closeable {
 
     // If we reach here, we don't have an existing connection open. Let's create a new one.
     // Multiple threads might race here to create new connections. Keep only one of them active.
+    // 走到这里，说明ClientPool中没有缓存的TransportClient
     final long preResolveHost = System.nanoTime();
     final InetSocketAddress resolvedAddress = new InetSocketAddress(remoteHost, remotePort);
     final long hostResolveTimeMs = (System.nanoTime() - preResolveHost) / 1000000;
@@ -179,10 +212,13 @@ public class TransportClientFactory implements Closeable {
       logger.trace("DNS resolution for {} took {} ms", resolvedAddress, hostResolveTimeMs);
     }
 
+    // 由于此处可能有多个线程同时处理，为每个ClientPool进行加锁，确保对应的ClientPool不会出现线程安全问题
     synchronized (clientPool.locks[clientIndex]) {
+      // 先获取
       cachedClient = clientPool.clients[clientIndex];
 
       if (cachedClient != null) {
+        // 检查是否激活
         if (cachedClient.isActive()) {
           logger.trace("Returning cached connection to {}: {}", resolvedAddress, cachedClient);
           return cachedClient;
@@ -190,6 +226,7 @@ public class TransportClientFactory implements Closeable {
           logger.info("Found inactive connection to {}, creating a new one.", resolvedAddress);
         }
       }
+      // 创建一个TransportClient放置到池中对应的索引位置
       clientPool.clients[clientIndex] = createClient(resolvedAddress);
       return clientPool.clients[clientIndex];
     }
@@ -207,7 +244,11 @@ public class TransportClientFactory implements Closeable {
     return createClient(address);
   }
 
-  /** Create a completely new {@link TransportClient} to the remote address. */
+  /**
+   * Create a completely new {@link TransportClient} to the remote address.
+   * 使用TransportClientFactory创建TransportClient对象，
+   * 内部会创建Netty的Bootstrap，并连接到指定的远程地址。
+   */
   private TransportClient createClient(InetSocketAddress address)
       throws IOException, InterruptedException {
     logger.debug("Creating new connection to {}", address);

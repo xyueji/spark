@@ -54,6 +54,9 @@ import org.apache.spark.network.util.TransportFrameDecoder;
  * The TransportServer and TransportClientFactory both create a TransportChannelHandler for each
  * channel. As each TransportChannelHandler contains a TransportClient, this enables server
  * processes to send messages back to the client on an existing channel.
+ *
+ * 传输上下文，包含了用于创建传输服务端（TransportServer）和传输客户端工厂（TransportClientFactory）的上下文信息，
+ * 并支持使用TransportChannelHandler设置Netty提供的SocketChannel的Pipeline的实现。
  */
 public class TransportContext {
   private static final Logger logger = LoggerFactory.getLogger(TransportContext.class);
@@ -143,14 +146,20 @@ public class TransportContext {
       SocketChannel channel,
       RpcHandler channelRpcHandler) {
     try {
+      // 创建TransportChannelHandler，InboundHandler
       TransportChannelHandler channelHandler = createChannelHandler(channel, channelRpcHandler);
+      // 添加Handler
       channel.pipeline()
+              // 消息编码，MessageEncoder，OutboundHandler
         .addLast("encoder", ENCODER)
         .addLast(TransportFrameDecoder.HANDLER_NAME, NettyUtils.createFrameDecoder())
+              // 消息解码，MessageDecoder，InboundHandler
         .addLast("decoder", DECODER)
+              // 心跳检测，OutboundHandler，ChannelInboundHandler
         .addLast("idleStateHandler", new IdleStateHandler(0, 0, conf.connectionTimeoutMs() / 1000))
         // NOTE: Chunks are currently guaranteed to be returned in the order of request, but this
         // would require more logic to guarantee if this were not part of the same event loop.
+              // InboundHandler
         .addLast("handler", channelHandler);
       return channelHandler;
     } catch (RuntimeException e) {

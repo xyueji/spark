@@ -68,13 +68,21 @@ import static org.apache.spark.network.util.NettyUtils.getRemoteAddress;
  * responsible for handling responses from the server.
  *
  * Concurrency: thread safe and can be called from multiple threads.
+ * RPC框架的客户端，用于获取预先协商好的流中的连续块。
+ * TransportClient旨在允许有效传输大量数据，这些数据将被拆分成几百KB到几MB的块。
+ * 当TransportClient处理从流中获取的块时，实际的设置是在传输层之外完成的。
+ * sendRPC方法能够在客户端和服务端的同一水平线的通信进行这些设置。
  */
 public class TransportClient implements Closeable {
   private static final Logger logger = LoggerFactory.getLogger(TransportClient.class);
 
+  // 进行通信的Channel通道对象
   private final Channel channel;
+  // 响应处理器
   private final TransportResponseHandler handler;
+  // 客户端ID
   @Nullable private String clientId;
+  // 标记是否超时
   private volatile boolean timedOut;
 
   public TransportClient(Channel channel, TransportResponseHandler handler) {
@@ -292,6 +300,8 @@ public class TransportClient implements Closeable {
   /**
    * Sends an opaque message to the RpcHandler on the server-side. No reply is expected for the
    * message, and no delivery guarantees are made.
+   *
+   * 用于发送不需要回复的OneWayMessage消息。
    *
    * @param message The message to send.
    */

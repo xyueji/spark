@@ -68,6 +68,17 @@ import org.apache.spark.util.random.{BernoulliCellSampler, BernoulliSampler, Poi
  *  - Optionally, a list of preferred locations to compute each split on (e.g. block locations for
  *    an HDFS file)
  *
+ *  1. 一组分片（Partition），即数据集的基本组成单位。对于RDD来说，每个分片都会被一个计算任务处理，并决定并行计算的粒度。
+ *     用户可以在创建RDD时指定RDD的分片个数，如果没有指定，那么就会采用默认值。默认值就是程序所分配到的CPU Core的数目。
+ *  2. 一个计算每个分区的函数。Spark中RDD的计算是以分片为单位的，每个RDD都会实现compute(...)函数以达到这个目的。
+ *     compute(...)函数会对迭代器进行复合，不需要保存每次计算的结果。
+ *  3. RDD之间的依赖关系。RDD的每次转换都会生成一个新的RDD，所以RDD之间就会形成类似于流水线一样的前后依赖关系。
+ *     在部分分区数据丢失时，Spark可以通过这个依赖关系重新计算丢失的分区数据，而不是对RDD的所有分区进行重新计算。
+ *  4. 一个Partitioner，即key-value类型的RDD的分片函数。当前Spark中实现了两种类型的分片函数，一个是基于哈希的HashPartitioner，
+ *     另外一个是基于范围的RangePartitioner。Partitioner函数不但决定了RDD本身的分片数量，也决定了父RDD在Shuffle输出时的分片数量。
+ *  5. 一个列表，存储存取每个Partition的优先位置（Preferred Locations）。对于一个HDFS文件来说，这个列表保存的就是每个Partition所在的块的位置。
+ *     按照“移动数据不如移动计算”的理念，Spark在进行任务调度的时候，会尽可能地将计算任务分配到其所要处理数据块的存储位置。
+ *
  * All of the scheduling and execution in Spark is done based on these methods, allowing each RDD
  * to implement its own way of computing itself. Indeed, users can implement custom RDDs (e.g. for
  * reading data from a new storage system) by overriding these functions. Please refer to the
@@ -937,6 +948,7 @@ abstract class RDD[T: ClassTag](
 
   /**
    * Return an array that contains all of the elements in this RDD.
+   * 将调用SparkContext的runJob方法提交基于RDD的所有分区上的作业
    *
    * @note This method should only be used if the resulting array is expected to be small, as
    * all the data is loaded into the driver's memory.

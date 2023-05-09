@@ -2053,11 +2053,13 @@ class SparkContext(config: SparkConf) extends Logging {
       throw new IllegalStateException("SparkContext has been shutdown")
     }
     val callSite = getCallSite
+    // 对传入给算子的操作进行清理检查
     val cleanedFunc = clean(func)
     logInfo("Starting job: " + callSite.shortForm)
     if (conf.getBoolean("spark.logLineage", false)) {
       logInfo("RDD's recursive dependencies:\n" + rdd.toDebugString)
     }
+    // 将DAG及RDD提交给DAGScheduler进行调度
     dagScheduler.runJob(rdd, cleanedFunc, partitions, callSite, resultHandler, localProperties.get)
     progressBar.foreach(_.finishAll())
     rdd.doCheckpoint()
