@@ -2081,6 +2081,12 @@ private[spark] class DAGScheduler(
    * This method is thread-safe because it only accesses DAGScheduler state through thread-safe
    * methods (getCacheLocs()); please be careful when modifying this method, because any new
    * DAGScheduler state accessed by it may require additional synchronization.
+   *
+   * DAGScheduler会尝试获取RDD的每个Partition的偏好位置信息:
+   *   a.如果RDD被缓存，通过缓存的位置信息获取每个分区的位置信息；
+   *   b.如果RDD有preferredLocations属性，通过preferredLocations获取每个分区的位置信息；
+   *   c.遍历RDD的所有是NarrowDependency的父RDD，找到第一个满足a,b条件的位置信息;
+   * DAGScheduler将生成好的TaskSet提交给TaskSetManager进行任务的本地性级别计算
    */
   private def getPreferredLocsInternal(
       rdd: RDD[_],
